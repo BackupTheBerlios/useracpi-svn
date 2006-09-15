@@ -1,0 +1,64 @@
+#!/bin/sh
+
+ID=$(id -u)
+if [ $ID -ne 0 ]; then
+	echo "ERROR: script requires root permissions, sorry."
+	exit 1
+fi
+
+if grep -q dev_acpi /proc/modules; then
+	echo "dev_acpi appears to already be loaded, unloading"
+	rmmod dev_acpi
+fi
+
+UNAME=$(uname -r)
+
+if echo $UNAME | grep -q ^2.6; then
+	MOD_SUFF=ko
+else
+	MOD_SUFF=o
+fi
+
+if insmod ./dev_acpi.$MOD_SUFF; then
+	echo "dev_acpi module loaded successfully"
+else
+	echo "ERROR: loading dev_acpi module failed"
+	exit 1
+fi
+
+MAJOR=$(grep acpi /proc/devices | cut -d ' ' -f 1)
+if [ -z $MAJOR ]; then
+	echo "ERROR: unable to determine device major number"
+	exit 1
+fi
+
+if [ -e /dev/acpi ]; then
+	echo "Removing existing device file"
+	rm -f /dev/acpi
+fi
+
+if ! mknod /dev/acpi c $MAJOR 0; then
+	echo "Failed to create new device file"
+	exit 1
+fi
+
+if ! grep -q acpi /etc/group; then
+	echo "Creating group acpi for /dev/acpi"
+	if ! groupadd acpi; then
+		echo "Failed to create acpi group"
+		exit 1
+	fi
+fi
+
+if ! chgrp acpi /dev/acpi; then
+	echo "Failed to change group ownership of /dev/acpi"
+	exit 1
+fi
+if ! chmod 660 /dev/acpi; then
+	echo "Failed to change file permissions on /dev/acpi"
+	exit 1
+fi
+
+echo
+echo "dev_acpi module loaded and device file created, group \"acpi\" has r/w access"
+echo

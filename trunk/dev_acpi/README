@@ -1,0 +1,210 @@
+
+           dev_acpi: A userspace ACPI namespace driver
+           ------------------------------------------
+
+Revision History
+----------------
+
+2004-10-26: Alex Williamson <alex.williamson@hp.com>
+	- Initial revision
+2005-07-28: Alex Williamson <alex.williamson@hp.com>
+	- Minor cleanups/corrections
+
+Overview
+--------
+
+   The dev_acpi driver attempts to solve the problem of providing
+user space access to the ACPI namespace.  This is done via a simple
+open/close, write/ioctl/read character device interface.  The driver
+provides read and write storage buffers on a per open basis.  Typically,
+ACPI namespace operations are preformed in the ioctl, using data that
+has been written to the device file and passed in via the argp ioctl
+parameter.  Data may be returned both in the argp structure and by
+reading from the device file.  The ioctl will return 0 for success
+in all cases.
+
+   The interface makes use of standard ACPI data structure when
+returning object data (union acpi_object) and for providing arguments
+for method execution (struct acpi_object_list).  The objects must be
+self contained within the write/read buffer and any pointers within
+the data structure must be replaced w/ offsets from the start of
+the buffer.  For instance, a _PRT method may create a read buffer
+containing data like this:
+
+(LSB(s) of fields indicated with ^^, fields are actually larger in size)
+
+0000: 04 00 00 00 01 00 00 00 
+      ^^          ^^           ACPI package, contains 1 element
+0008: 10 00 00 00 00 00 00 00 
+      ^^                       array of package elements starts at 0x10 (array1)
+0010: 04 00 00 00 04 00 00 00 
+      ^^          ^^           array1[0] is a package, contains 4 elements
+0018: 20 00 00 00 00 00 00 00 
+      ^^                       array of package elements starts at 0x20 (array2)
+0020: 01 00 00 00 ff ff 00 00 
+      ^^          ^^^^^        array2[0] is an integer, value 0xffff
+0028: 00 00 00 00 00 00 00 00 
+0030: 01 00 00 00 00 00 00 00 
+      ^^          ^^^^^        array2[1] is an integer, value 0x0
+0038: 00 00 00 00 00 00 00 00 
+0040: 00 00 00 00 00 00 00 00 
+      ^^                       array2[2] is "type any" (grr.. acpi fw), we
+                               treat this the same as an integer, so value is
+			       0xc2101c0000000000
+0048: 00 1c 10 c2 00 00 00 00 
+0050: 01 00 00 00 00 00 00 00 
+      ^^          ^^           array2[3] is an integer, value 0x0
+0058: 00 00 00 00 00 00 00 00 
+
+  User space must create similarly formatted data structures to write to
+to the device file to provide arguments for method execution.
+
+   A 32bit compatibility layer provides a translation layer, allowing
+the interface to be used by architectures supporting mixed 32bit and
+64bit executables (tested on ia64 and x86_64).  When the ioctl is called,
+the compatibility handler converts 32bit data structures into native
+format, calls the native ioctl, then converts returned data to 32bit
+format.
+
+   The interface also defines some ioctls that return data as ASCII
+text.  These provide objects lists (one per line), possibly appended
+with event data if even notifiers are installed.
+
+   When the device file is closed, all data written to the device and
+data available for read is discarded.  Additionally, any notify handlers
+installed are removed when the device file is closed.
+
+Interfaces
+----------
+
+DEV_ACPI_CLEAR - Clear the read & write buffers
+	Input: none
+	Output: none
+
+DEV_ACPI_EXISTS - Returns success if the given path object exists in namespace
+	Input:
+		ioctl (dev_acpi_t)argp.pathname = path to query
+	Output: none
+
+DEV_ACPI_GET_TYPE - Return the type of an object
+	Input:
+		ioctl (dev_acpi_t)argp.pathname = path to query
+	Output:
+		ioctl (dev_acpi_t)argp.return_size = size of read buffer
+		read: acpi object (integer) describing object type 
+
+DEV_ACPI_EVALUATE_OBJ - Evaluate an object
+	Input:
+		write: acpi_object_list containing arguments (optional)
+		ioctl (dev_acpi_t)argp.pathname = path to evaluate
+	Output:
+		ioctl (dev_acpi_t)argp.return_size = size of read buffer
+		read: data returned (union acpi_object)
+
+DEV_ACPI_GET_NEXT - get objects immediately below a given path
+	Input:
+		ioctl (dev_acpi_t)argp.pathname = path
+	Output:
+		ioctl (dev_acpi_t)argp.return_size = size of read buffer
+		read: children of the given path (ASCII)
+
+DEV_ACPI_GET_OBJECTS - Get objects named "path"
+	Input:
+		ioctl (dev_acpi_t)argp.pathname = objects names (ex "_DCK")
+	Output:
+		ioctl (dev_acpi_t)argp.return_size = size of read buffer
+		read: path to objects matching (ASCII)
+
+DEV_ACPI_GET_PARENT - Get parent object of a given path
+	Input:
+		ioctl (dev_acpi_t)argp.pathname = object to get parent of
+	Output:
+		ioctl (dev_acpi_t)argp.return_size = size of read buffer
+		read: path of parent (ASCII)
+
+DEV_ACPI_SYS_INFO - Get system info
+	Input: none
+	Output:
+		ioctl (dev_acpi_t)argp.return_size = size of read buffer
+		read: (struct acpi_system_info)
+NOTE: This is currently not supported as the kernel no longer exports
+      the necessary symbol for this.
+
+DEV_ACPI_DEVICE_NOTIFY
+DEV_ACPI_REMOVE_DEVICE_NOTIFY
+DEV_ACPI_SYSTEM_NOTIFY
+DEV_ACPI_REMOVE_SYSTEM_NOTIFY - Install/Remove device/system notify handler
+	Input:
+		ioctl (dev_acpi_t)argp.pathname = device to install/remove
+		                                  handler
+	Output: none*
+
+* When an event occurs on the device, the read buffer will contain
+  ("%s,%08x", pathname, event).  If notify handlers are installed on
+  a file descriptor, reads will block unless the fd is opened O_NONBLOCK.
+  The expected usage model is that a separate fd will be used to handle
+  notifies.
+
+DEV_ACPI_BUS_GENERATE_EVENT - Generate an ACPI event
+	Input:
+		ioctl (dev_acpi_t)argp.pathname = ("%s,%d,%d", pathname, type,
+		                                                         event)
+	Output: none
+
+Install
+-------
+	
+  * If necessary, edit Makefile to provide path to kernel headers
+  * make
+  * make install
+
+Usage
+-----
+
+  * modprobe dev_acpi
+
+  On 2.6 systems w/ udev, the device file should automatically be created.
+
+  For 2.4...
+  The module dynamically allocates a major number, check the dmesg buffer
+  or /proc/devices (for "acpi") to retrieve it.
+
+  	* mknod /dev/acpi c <major> 0
+
+Tools
+-----
+
+   All tools are only meant as examples/proof-of-concept.  They are not
+very user friendly (sorry) and not cleaned up enough for any kind of
+production use (aka much hackery and poorly architected code).
+
+acpitree - List ACPI namespace, printing data for "safe", methods and objects.
+           (may see some "BUG" output for things I was too lazy to implement
+	    ex. _CIDs that return a package)
+
+acpivideo - Find the ACPI video device and allow switching.  Usage:
+		acpivideo crt (set video out to CRT device)
+		acpivideo lcd (set video out to LCD device)
+		acpivideo crt lcd (set video out to both CRT and LCD device)
+
+            There's also a tv0/tv1 option, but I've never had it work.  When
+	    run with no parameters, acpivideo will wait for ACPI events
+	    and evaluate which devices to enable.  On laptops, try to
+	    generate an event using the video switch hotkey.  acpivideo should
+	    intercept the mode switch from ACPI firmware and do it for you
+	    (if all goes well, you won't notice any difference but there will
+	    be enough output to see things are happening).  Note, you
+	    need to switch to text mode virtual consoles or X will prevent
+	    switching output.
+
+acpiundock - Looks for docking stations in ACPI namespace and ejects them.
+             Be prepared for this to actually work, it does on an omnibook 500.
+
+eventwatch - A hack on acpitree that tries to install notify handlers on
+             every device in namespace.  It will then loop looking for events.
+	     Useful for seeing what might generate events.  Note ACPI only
+	     allows one notifier to be installed per device, other drivers
+	     like button and thermal may have already installed handers for
+	     the more obvious devices.
+
+acpitree-debug - Random test related hacks on acpitree.
