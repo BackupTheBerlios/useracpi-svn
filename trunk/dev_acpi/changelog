@@ -1,0 +1,12 @@
+dev_acpi (0.1.1) unstable; urgency=low
+
+  * pulled top of tree 09/15/2006 to start a public project around this
+	development effort
+  * Current release contains patches from 
+   Incorporated patch from Pavel Troller <patrol@sinus.cz> to automatically
+   create the device file using udev.  This had to be munged slightly because
+   we've apparently changed the interface in 2.6.13-rc kernels. Code tested
+   through 2.6.16.  Tested on ia64 RHEL3 & RHEL4, and x86 Debian.
+
+ -- Chad Smith <first.last@hp.com>  Fri, 15 Sept 2006 04:28:41 -0800
+
